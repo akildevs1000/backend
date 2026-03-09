@@ -1,0 +1,6 @@
+venv/
+payloads/
+__pycache__/
+*.pyc
+.env
+*.db
