@@ -1,39 +1,18 @@
 """
-Standalone Face Verification API
+Face Verification API — File Upload Only
 Uses InsightFace (ArcFace) for high-accuracy 1v1 face matching.
-No database, no auth — just send two images, get match result.
+Single endpoint: POST /verify-face-fast-file
 """
 
-import base64
-import json
 import logging
-import os
 import time
-from datetime import datetime
-from typing import Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from app.face_model import face_model
-
-# ─── Payload storage ──────────────────────────────────────────────────────────
-
-PAYLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "payloads")
-os.makedirs(PAYLOAD_DIR, exist_ok=True)
-
-
-def save_payload(endpoint: str, payload: dict):
-    """Save each incoming request payload as a timestamped JSON file."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    filename = f"{endpoint}_{ts}.json"
-    filepath = os.path.join(PAYLOAD_DIR, filename)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    logger.info(f"Payload saved: {filename}")
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
 
@@ -49,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Face Verification API",
     version="1.0.0",
-    description="ArcFace-powered 1v1 face verification. Send two images, get match result.",
+    description="ArcFace-powered 1v1 face verification via file upload.",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -71,29 +50,12 @@ async def startup():
     logger.info("Model ready.")
 
 
-# ─── Schemas ───────────────────────────────────────────────────────────────────
-
-class Base64VerifyRequest(BaseModel):
-    captured_image_base64: str
-    existing_image_base64: str
-
-
 # ─── Config ────────────────────────────────────────────────────────────────────
 
 MATCH_THRESHOLD = 0.45  # ArcFace cosine similarity threshold (0.45 = relaxed, 0.6 = strict)
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
-
-def decode_base64_image(b64: str) -> np.ndarray:
-    encoded = b64.split(",", 1)[-1] if "," in b64 else b64
-    img_bytes = base64.b64decode(encoded)
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("Invalid image data")
-    return img
-
 
 def preprocess_image(img: np.ndarray) -> np.ndarray:
     """
@@ -189,43 +151,8 @@ async def root():
         "status": True,
         "message": "Face Verification API is running",
         "model": "InsightFace ArcFace (buffalo_l)",
-        "endpoints": [
-            "/verify-face-fast",
-            "/verify-face-fast-file",
-            "/verify-face-fast-form",
-        ],
+        "endpoints": ["/verify-face-fast-file"],
     }
-
-
-@app.post("/verify-face-fast")
-async def verify_face_base64(data: Base64VerifyRequest):
-    """Verify two faces via base64 images. Drop-in replacement for your existing endpoint."""
-    start = time.perf_counter()
-
-    # Save payload for later testing
-    save_payload("verify-face-fast", {
-        "captured_image_base64": data.captured_image_base64,
-        "existing_image_base64": data.existing_image_base64,
-    })
-
-    try:
-        img1 = decode_base64_image(data.captured_image_base64)
-        img2 = decode_base64_image(data.existing_image_base64)
-    except Exception:
-        return {"match": False, "reason": "Invalid image data"}
-
-    result1 = get_embedding(img1)
-    if not result1["success"]:
-        return {"match": False, "reason": f"captured_image: {result1.get('reason', 'no_face')}", "face_size": result1.get("face_size"), "image_size": result1.get("image_size")}
-
-    result2 = get_embedding(img2)
-    if not result2["success"]:
-        return {"match": False, "reason": f"existing_image: {result2.get('reason', 'no_face')}", "face_size": result2.get("face_size"), "image_size": result2.get("image_size")}
-
-    similarity = compare_embeddings(result1["embedding"], result2["embedding"])
-    elapsed = (time.perf_counter() - start) * 1000
-
-    return build_response(result1, result2, similarity, elapsed)
 
 
 @app.post("/verify-face-fast-file")
@@ -233,54 +160,11 @@ async def verify_face_file(
     captured_image: UploadFile = File(...),
     existing_image: UploadFile = File(...),
 ):
-    """Verify two faces via file upload. Drop-in replacement for your existing endpoint."""
+    """Verify two faces via file upload."""
     start = time.perf_counter()
 
     bytes1 = await captured_image.read()
     bytes2 = await existing_image.read()
-
-    # Save payload as base64 JSON for later testing
-    save_payload("verify-face-fast-file", {
-        "captured_image_base64": base64.b64encode(bytes1).decode("utf-8"),
-        "existing_image_base64": base64.b64encode(bytes2).decode("utf-8"),
-    })
-
-    img1 = cv2.imdecode(np.frombuffer(bytes1, np.uint8), cv2.IMREAD_COLOR)
-    img2 = cv2.imdecode(np.frombuffer(bytes2, np.uint8), cv2.IMREAD_COLOR)
-
-    if img1 is None or img2 is None:
-        return {"match": False, "reason": "Invalid image file"}
-
-    result1 = get_embedding(img1)
-    if not result1["success"]:
-        return {"match": False, "reason": f"captured_image: {result1.get('reason', 'no_face')}", "face_size": result1.get("face_size"), "image_size": result1.get("image_size")}
-
-    result2 = get_embedding(img2)
-    if not result2["success"]:
-        return {"match": False, "reason": f"existing_image: {result2.get('reason', 'no_face')}", "face_size": result2.get("face_size"), "image_size": result2.get("image_size")}
-
-    similarity = compare_embeddings(result1["embedding"], result2["embedding"])
-    elapsed = (time.perf_counter() - start) * 1000
-
-    return build_response(result1, result2, similarity, elapsed)
-
-
-@app.post("/verify-face-fast-form")
-async def verify_face_form(
-    captured_image: UploadFile = File(...),
-    existing_image: UploadFile = File(...),
-):
-    """Verify two faces via form-data file upload."""
-    start = time.perf_counter()
-
-    bytes1 = await captured_image.read()
-    bytes2 = await existing_image.read()
-
-    # Save payload as base64 JSON for later testing
-    save_payload("verify-face-fast-form", {
-        "captured_image_base64": base64.b64encode(bytes1).decode("utf-8"),
-        "existing_image_base64": base64.b64encode(bytes2).decode("utf-8"),
-    })
 
     img1 = cv2.imdecode(np.frombuffer(bytes1, np.uint8), cv2.IMREAD_COLOR)
     img2 = cv2.imdecode(np.frombuffer(bytes2, np.uint8), cv2.IMREAD_COLOR)
@@ -306,4 +190,4 @@ async def verify_face_form(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8002)

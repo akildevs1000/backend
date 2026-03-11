@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /c/Users/SERVER/Downloads/facial-attendance-system/facial-attendance-system/backend/*.md /c/Users/SERVER/Downloads/facial-attendance-system/facial-attendance-system/backend/*.yml /c/Users/SERVER/Downloads/facial-attendance-system/facial-attendance-system/backend/*.yaml)"
+    ]
+  }
+}
